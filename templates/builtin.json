@@ -1,0 +1,41 @@
+[
+  {
+    "id": "builtin-supervision", "name": "监理技术建议书·首期参考", "business_types": ["supervision"],
+    "source": "首期本地编制参考模板，非强制行业标准；依据具体招标文件由业务负责人校准", "tags": ["内置", "监理", "技术"],
+    "sections": [
+      {"key": "overview", "title": "项目认识与监理范围", "category": "technical", "body": "项目：{{project.name}}\n委托方：{{project.client}}\n服务区域：{{project.region}}\n服务范围：{{project.scope}}\n已确认事实：\n{{facts}}\n本建议书以招标文件及合同约定为工作边界。监理职责不代替建设、设计、施工单位的法定责任。具体监理目标、服务期限和接口由双方确认。"},
+      {"key": "organization", "title": "监理组织、岗位职责与人月安排", "category": "technical", "body": "配置原则：依据工程规模、专业分布和服务阶段设置项目监理组织，明确总监及专业人员职责。\n拟用企业资料：\n{{materials}}\n{{fact.staffing}}\n人员实际姓名、证照、到岗时间及人月安排仅以已核验资料和已确认安排为准，不自动生成。"},
+      {"key": "control", "title": "质量、进度、造价及安全履职措施", "category": "technical", "body": "工作方法：开工条件核查、方案审核、现场巡视、关键工序旁站及见证记录按合同和适用规范执行；进度偏差形成协调记录；计量与支付意见以验收和合同依据为准。对发现的安全隐患提出整改意见并跟踪，必要时按职责报告，不代替施工单位安全生产责任。\n项目关键控制点及频次：{{fact.control_points}}"},
+      {"key": "delivery", "title": "监理交付与问题闭环", "category": "technical", "body": "建立问题台账，记录发现、责任界面、整改期限、复查证据和关闭意见；按约定形成监理规划、实施细则、监理日志、月报及总结。\n本项目交付清单和时点：{{fact.deliverables}}\n地区、项目及招标文件的适用规则由人工核对，不作全国统一合规判定。{{fact.regional_rules}}"}
+    ]
+  },
+  {
+    "id": "builtin-tis", "name": "TIS风险减量服务方案·首期参考", "business_types": ["tis"],
+    "source": "首期TIS编制参考；上海等地区对独立性及角色兼任可能有专门要求，必须按项目所在地人工核对", "tags": ["内置", "TIS", "技术"],
+    "sections": [
+      {"key": "overview", "title": "项目认识与风险减量服务范围", "category": "technical", "body": "项目：{{project.name}}\n委托方：{{project.client}}\n地区：{{project.region}}\n委托服务范围：{{project.scope}}\n已确认事实：\n{{facts}}\nTIS技术服务围绕工程质量风险识别、检查及风险信息反馈开展，不代替监理、设计审查、法定检测或保险核保理赔结论。"},
+      {"key": "independence", "title": "委托关系、独立性与角色边界", "category": "technical", "body": "书面明确委托方、信息接收方、服务责任及报告路径，核查利益冲突与同项目角色兼任限制。\n委托关系：{{fact.commission_relationship}}\n独立性与角色边界确认：{{fact.independence}}\n适用地区规则核对：{{fact.regional_rules}}\n不得将某一地区规则自动视为全国标准。"},
+      {"key": "nodes", "title": "检查节点、专业配置与人月", "category": "technical", "body": "依据合同和风险识别选择设计文件核查、地基基础、主体结构、防水及竣工等适用检查节点；不默认每个项目具有相同节点。\n确认的检查节点及频次：{{fact.inspection_nodes}}\n专业人员与人月：{{fact.staffing}}\n拟选资料：\n{{materials}}\n服务人月和现场检查次数分别记录，技术服务费不与保险保费混写。"},
+      {"key": "risk", "title": "风险分级、整改追踪与复核闭环", "category": "technical", "body": "形成风险识别—分级—通知—整改—复核—关闭的可追溯记录。每项风险记录部位、事实、证据、责任接口、处置建议、期限和复核结果；未关闭事项在报告中保留，不虚构检查或检测结果。\n风险分级及升级机制：{{fact.risk_process}}\n交付报告及节点：{{fact.deliverables}}"}
+    ]
+  },
+  {
+    "id": "builtin-commercial", "name": "商务报价说明", "business_types": ["supervision", "tis"], "source": "本地参考模板；数量乘单价，税率由用户确认；不提供统一收费标准", "tags": ["内置", "商务"],
+    "sections": [
+      {"key": "price", "title": "服务报价及计费依据", "category": "commercial", "body": "报价仅覆盖本项目已确认服务范围。报价采用后端逐行四舍五入至分、行金额合计后计算税额的方法。\n{{quote}}\n付款与结算条件：{{fact.payment_terms}}\n不测算保险保费，不把监理费、TIS技术服务费和保费合并。"},
+      {"key": "commitment", "title": "商务响应与合同边界", "category": "commercial", "body": "服务期限、报价有效期、付款节点、违约责任及其他合同条款应逐项响应招标要求。\n已确认商务承诺：{{fact.commercial_terms}}\n所有签署、盖章及门户提交由企业线下核验后自行办理，本软件不生成或修改签章。"}
+    ]
+  },
+  {
+    "id": "builtin-qualification", "name": "资格及人员证明目录", "business_types": ["supervision", "tis"], "source": "本地参考目录；上传和审核记录不构成对证照真伪的自动认定", "tags": ["内置", "资质"],
+    "sections": [{"key": "evidence", "title": "企业资质、人员证照及业绩证明", "category": "qualification", "body": "选用证明资料：\n{{materials}}\n核对企业名称、证件有效期、人员及业绩适用范围与招标条件。附件按原件提供，目录不替代原始证明材料。最终附件和签章由业务负责人核验。"}]
+  },
+  {
+    "id": "builtin-response", "name": "需求响应表", "business_types": ["supervision", "tis"], "source": "根据项目人工确认的需求与章节映射生成；未发现要求不等于已满足", "tags": ["内置", "响应"],
+    "sections": [{"key": "matrix", "title": "条款响应与证明索引", "category": "response", "body": "{{requirements}}\n上述需求从人工确认的条款记录生成。来源、版本、响应章节及证明资料以项目需求矩阵为准，未确认条款不得视作已响应。"}]
+  },
+  {
+    "id": "builtin-internal", "name": "内部复核表", "business_types": ["supervision", "tis"], "source": "本地内部复核参考；无真实登录，仅记录人工复核意见，不构成认证审批", "tags": ["内置", "复核"],
+    "sections": [{"key": "check", "title": "内部复核与提交边界", "category": "internal", "body": "技术复核应核对方案与项目事实、服务边界及人员配置；商务复核应核对计费依据、税率与合同条件；资质复核应核对证件原件、有效期和适用范围。\n实际复核人员、意见及结论在软件复核记录中填写。本表文字不构成审核通过；仅后端检查和三类人工意见全部满足后才可形成已内部复核快照。\n最终投标文件由企业负责人核定，软件不保证合规、中标或直接可提交。"}]
+  }
+]
