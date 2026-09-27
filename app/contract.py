@@ -56,6 +56,20 @@ class FileOut(Record):
     kind: str | None = None
 
 
+class FileSummary(Record):
+    """文件列表摘要；blocks 解析正文通过 GET /api/files/{file_id} 获取。"""
+    name: str
+    sha256: str
+    size: int
+    media_type: str
+    purpose: str
+    download_url: str
+    parse_status: Literal["parsed", "needs_manual_excerpt", "low_quality"] | None = None
+    page_count: int | None = None
+    warnings: list[str] = []
+    kind: str | None = None
+
+
 class DocumentOut(Record):
     project_id: str
     title: str
@@ -178,6 +192,19 @@ class DraftOut(Record):
     is_current: bool | None = None
 
 
+class DraftSummary(Record):
+    """草稿列表摘要；input_snapshot 与章节正文通过 GET /drafts/{draft_id} 获取。"""
+    project_id: str
+    generation: int
+    previous_draft_id: str | None
+    input_project_version: int
+    input_hash: str
+    generation_method: str
+    stale: bool
+    is_current: bool
+    section_count: int
+
+
 class Issue(BaseModel):
     code: str
     message: str
@@ -239,6 +266,27 @@ class ExportOut(Record):
     immutable: bool
 
 
+class ReviewSnapshotSummary(Record):
+    """冻结快照摘要；完整不可变内容通过 GET /review/snapshots/{snapshot_id} 获取。"""
+    project_id: str
+    project_version: int
+    reviewer: str
+    frozen_at: str | None
+    immutable: bool
+
+
+class ExportSummary(Record):
+    """导出摘要；完整 snapshot 通过 GET /exports/{export_id} 获取。"""
+    project_id: str
+    project_version: int
+    mode: Literal["review", "reviewed"]
+    review_snapshot_id: str | None
+    manifest: dict[str, Any]
+    files: list[FileOut]
+    immutable: bool
+    download_url: str | None = Field(default=None, description="成果ZIP下载地址")
+
+
 T = TypeVar("T")
 
 
@@ -265,10 +313,10 @@ class ProjectDetail(BaseModel):
     draft: DraftOut | None
     risk_report: RiskOut
     review_records: list[DecisionOut]
-    exports: list[ExportOut]
+    exports: list[ExportSummary]
 
 
-class DraftList(Items[DraftOut]):
+class DraftList(Items[DraftSummary]):
     current: DraftOut | None
 
 
@@ -278,7 +326,7 @@ class ReviewOut(BaseModel):
     records: list[DecisionOut]
     risk_report: RiskOut
     current_review_id: str | None
-    snapshots: list[ReviewSnapshotOut]
+    snapshots: list[ReviewSnapshotSummary]
 
 
 class Deleted(BaseModel):
@@ -347,6 +395,109 @@ class EventOut(BaseModel):
     project_id: str | None
 
 
+class AIConfigOut(Record):
+    """AI服务配置；api_key仅回显掩码，绝不返回明文。"""
+    enabled: bool
+    provider: Literal["null", "ollama", "openai_compat"]
+    base_url: str
+    model: str
+    embedding_model: str
+    api_key_masked: str = Field(description="形如****abcd；空字符串表示未设置密钥")
+    is_cloud: bool
+    redaction_level: Literal["standard", "strict"]
+    default_scope: list[str]
+    max_concurrent: int
+    daily_token_budget: int
+    timeout_seconds: float
+    external_ai: bool = Field(description="enabled且provider非null时为true")
+
+
+class AITestOut(BaseModel):
+    reachable: bool
+    reason: str = ""
+    provider: str
+    model: str
+    models: list[str] = []
+    latency_ms: int = 0
+    base_url: str = ""
+
+
+class AIPreviewOut(BaseModel):
+    preview_id: str
+    feature: str
+    project_id: str
+    project_version: int
+    provider: str
+    model: str
+    redaction_level: Literal["standard", "strict"]
+    redaction_summary: dict[str, int] = Field(description="各类敏感信息命中计数")
+    masked_tokens: int
+    estimated_tokens: int
+    scope_applied: list[str]
+    redacted_text: str = Field(description="脱敏后待发送正文的回显（可能截断）")
+    warnings: list[str] = []
+    expires_in_seconds: int
+    disclaimer: str
+
+
+class AIDegradation(BaseModel):
+    to: str
+    code: str
+    message: str
+
+
+class AIResultOut(BaseModel):
+    status: Literal["success", "fallback"]
+    feature: str
+    provider: str
+    model: str
+    text: str
+    origin: Literal["ai_suggestion", "rule_engine"]
+    latency_ms: int
+    prompt_tokens: int
+    completion_tokens: int
+    finish_reason: str
+    degradation: AIDegradation | None = None
+    disclaimer: str
+    call_id: int | None = Field(default=None, description="对应审计日志ID")
+
+
+class AICallSummaryOut(BaseModel):
+    """审计列表摘要；不含prompt_preview/response_preview重字段。"""
+    id: int
+    at: str
+    project_id: str | None
+    entity_kind: str | None
+    entity_id: str | None
+    phase: int
+    feature: str
+    provider: str
+    model: str | None
+    endpoint_masked: str | None
+    prompt_tokens: int
+    response_tokens: int
+    user_confirmed: bool
+    latency_ms: int
+    status: str
+    error_code: str | None
+    fallback_used: bool
+    origin_mark: str | None
+
+
+class AICallDetailOut(AICallSummaryOut):
+    prompt_hash: str | None
+    prompt_preview: str | None
+    response_hash: str | None
+    response_preview: str | None
+    redaction_summary: dict[str, Any] | None
+    scope_applied: list[str] | None
+    confirmation_at: str | None
+
+
+class AICallList(Items[AICallSummaryOut]):
+    total: int
+
+
 def attach_response_contract(app):
     models = {
         "project_list": Items[ProjectOut], "project_create": Item[ProjectOut], "project_detail": ProjectDetail,
@@ -357,12 +508,16 @@ def attach_response_contract(app):
         "quote_get": Item[QuoteOut | None], "quote_save": Item[QuoteOut], "drafts_get": DraftList,
         "draft_get": Item[DraftOut], "draft_generate": Item[DraftOut], "draft_reconcile": Item[DraftOut],
         "section_edit": Item[SectionOut], "section_insert": Item[SectionOut], "review_get": ReviewOut,
+        "review_snapshot_detail": Item[ReviewSnapshotOut],
         "review_check": Item[RiskOut], "review_decision": Item[DecisionOut], "review_finalize": Item[ReviewSnapshotOut],
-        "export_list": Items[ExportOut], "export_create": Item[ExportOut], "export_detail": Item[ExportOut],
+        "export_list": Items[ExportSummary], "export_create": Item[ExportSummary], "export_detail": Item[ExportOut],
         "backup_create": Item[BackupOut], "health": HealthOut, "dashboard": DashboardOut,
         "get_settings": SettingsOut, "help_content": Items[HelpEntry], "demo": DemoOut,
-        "list_files": Items[FileOut], "upload_file": Item[FileOut], "file_metadata": Item[FileOut],
+        "list_files": Items[FileSummary], "upload_file": Item[FileOut], "file_metadata": Item[FileOut],
         "project_events": Items[EventOut], "template_copy": Item[TemplateOut],
+        "ai_config_get": Item[AIConfigOut], "ai_config_update": Item[AIConfigOut],
+        "ai_test": Item[AITestOut], "ai_preview": Item[AIPreviewOut], "ai_invoke": Item[AIResultOut],
+        "ai_calls": AICallList, "ai_call_detail": Item[AICallDetailOut],
     }
     for prefix, plural, model in [("material", "materials", MaterialOut), ("template", "templates", TemplateOut), ("snippet", "snippets", SnippetOut)]:
         models[plural] = Items[model]

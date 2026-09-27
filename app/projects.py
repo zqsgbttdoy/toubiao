@@ -1,21 +1,37 @@
 """项目内容、不可变来源版本、候选条款与人工确认。"""
 import re
 from fastapi import APIRouter, File, Form, Request, UploadFile
-from starlette.concurrency import run_in_threadpool
 
 from .core import DomainError, uid
-from .files import parse_and_store, read_upload
+from .files import parse_and_store, read_upload_sync
 from .schemas import (ProjectCreate, ProjectUpdate, Archive, Selection, Version, EntityVersion,
                       Excerpt, RequirementCreate, RequirementUpdate)
 
 router = APIRouter(prefix="/api/projects", tags=["项目与招标分析"])
 
+# 候选条款分类关键词：命中即归入对应 category，仅用于人工确认前的初筛。
+# 说明：category=="mandatory" 不等同强制条款；是否阻断复核由下方 mandatory 标志
+# （必须/应当/不得/否决/废标/强制等义务词）单独判定，扩充行业词不会误升为阻断项。
 PATTERNS = [
-    ("qualification", r"资质|资格|证书|注册|业绩|执业"),
-    ("mandatory", r"必须|应当|不得|否决|废标|不接受|强制"),
-    ("scoring", r"评分|得分|加分|分值|评审"),
-    ("delivery", r"交付|提交|成果|报告|节点|期限|检查|整改"),
-    ("pricing", r"报价|费用|单价|税率|人月|保费|付款|结算"),
+    # 资格类：企业资质、人员资格、业绩、独立性与TIS机构资格
+    ("qualification", r"资质|资格|证书|注册|业绩|执业|监理资质|综合资质|专业甲级|专业乙级|"
+                      r"注册监理工程师|总监资格|安全生产许可证|ISO认证|风险管理机构|TIS机构|IDI|"
+                      r"注册执业资格|工程建设经历|独立性"),
+    # 强制类：监理法定动作、危大工程、TIS风险管控与独立性红线
+    ("mandatory", r"必须|应当|不得|否决|废标|不接受|强制|旁站监理|旁站|平行检验|见证取样|"
+                  r"隐蔽工程验收|监理规划|监理实施细则|工程暂停令|竣工验收|危大工程|专项方案论证|"
+                  r"风险识别|风险分级|检查频次|关键节点|整改跟踪|闭环管理|报告制度|实名制|IDI平台|"
+                  r"不得兼任|独立性承诺|关联关系|参建单位"),
+    # 评分类：技术标评分项、监控措施与技术创新亮点
+    ("scoring", r"评分|得分|加分|分值|评审|监理大纲|质量控制措施|进度控制措施|投资控制措施|"
+                r"安全管理措施|合同管理|组织协调|重难点分析|BIM应用|智慧工地|绿色监理|检测设备|"
+                r"全生命周期|红外成像|无人机巡查|卫星遥感|BIM技术|大数据分析|风险减量|保险理赔"),
+    # 交付/时效类：成果交付、检查整改与TIS报告时效
+    ("delivery", r"交付|提交|成果|报告|节点|期限|检查|整改|时效|12小时|24小时|"
+                 r"严重技术风险|重大技术风险|一般技术风险"),
+    # 报价类：人月单价、费率、服务周期与评标基准价
+    ("pricing", r"报价|费用|单价|税率|人月|保费|付款|结算|人月单价|监理费率|服务周期|"
+                r"报价偏差率|评标基准价"),
 ]
 
 
@@ -93,15 +109,17 @@ def project_create(body: ProjectCreate, request: Request):
 @router.get("/{project_id}")
 def project_detail(project_id: str, request: Request):
     from .drafts import draft_detail
+    from .exports import export_summary
     from .review import check_risks
     store = request.app.state.store
     with store.transaction() as c:
         p = store.project(c, project_id)
+        # 导出历史仅返回摘要；完整冻结快照体积巨大，按需通过 GET /exports/{id} 获取。
         return {"item": p, "documents": store.all(c, "document", project_id),
             "requirements": store.all(c, "requirement", project_id), "quote": store.get(c, "quote", project_id, False),
             "draft": draft_detail(store, c, p), "risk_report": check_risks(store, c, p),
             "review_records": store.all(c, "review_decision", project_id),
-            "exports": store.all(c, "export", project_id)}
+            "exports": [export_summary(e) for e in store.all(c, "export", project_id)]}
 
 
 @router.put("/{project_id}")
@@ -165,13 +183,14 @@ def documents(project_id: str, request: Request):
 
 
 @router.post("/{project_id}/documents", status_code=201)
-async def document_upload(project_id: str, request: Request, file: UploadFile = File(...),
-                          expected_version: int = Form(..., ge=1), replaces_document_id: str | None = Form(None)):
+def document_upload(project_id: str, request: Request, file: UploadFile = File(...),
+                    expected_version: int = Form(..., ge=1), replaces_document_id: str | None = Form(None)):
+    # 同步 def：FastAPI 自动放入线程池，事务与解析不阻塞事件循环。
     store = request.app.state.store
     with store.transaction() as c:
         store.project(c, project_id, expected_version, True)
-    name, extension, raw = await read_upload(file, store.settings)
-    imported = await run_in_threadpool(parse_and_store, store, name, extension, raw, "tender")
+    name, extension, raw = read_upload_sync(file, store.settings)
+    imported = parse_and_store(store, name, extension, raw, "tender")
     with store.transaction() as c:
         p = store.project(c, project_id, expected_version, True)
         parsed = {k: imported[k] for k in ("blocks", "page_count", "parse_status", "warnings")}
@@ -219,6 +238,34 @@ def sync_requirement_sections(store, c, p, requirement_id, section_id):
             changed = True
     if changed:
         store.save(c, "draft", store.get(c, "draft", p["current_draft_id"]), "requirement_link_changed")
+
+
+def sync_requirement_sections_bulk(store, c, project, moves: dict[str, str | None]) -> bool:
+    """批量同步条款归属：moves 为 {requirement_id: 目标section_id 或 None}。
+
+    整批只扫描一次当前草稿章节，且草稿最多保存一次，
+    避免逐条同步时 O(N×S) 的重复读写与修订膨胀。返回是否有章节发生变化。
+    """
+    draft_id = project.get("current_draft_id")
+    if not moves or not draft_id:
+        return False
+    incoming = {}
+    for requirement_id, section_id in moves.items():
+        if section_id:
+            incoming.setdefault(section_id, []).append(requirement_id)
+    changed = False
+    for section in store.all(c, "section", project["id"]):
+        if section["draft_id"] != draft_id:
+            continue
+        links = [rid for rid in section["requirement_ids"] if rid not in moves]
+        links.extend(rid for rid in incoming.get(section["id"], []) if rid not in links)
+        if set(links) != set(section["requirement_ids"]):
+            section["requirement_ids"] = links
+            store.save(c, "section", section, "requirement_link_changed")
+            changed = True
+    if changed:
+        store.save(c, "draft", store.get(c, "draft", draft_id), "requirement_link_changed")
+    return changed
 
 
 def requirement_data(store, c, p, body):

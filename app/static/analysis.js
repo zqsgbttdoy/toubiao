@@ -1,5 +1,6 @@
-import {api, query, checkFile} from './api.js';
+import {api, apiDirect, aiConfig, aiAvailable, query, checkFile} from './api.js';
 import {h, actions, badge, notice, button, empty, loading, errorPanel, field, bind, checkbox, checks, editorForm, modal, confirmDialog, toast, CATEGORIES, RESPONSE, locator, dateTime, definition, versionRefresh, serverText, downloadButton, materialWarnings} from './ui.js';
+import {aiStatusBadge, redactionText} from './settings.js';
 
 export function documentStatus(doc) {
   return doc.parse_status === 'parsed' ? badge('文字已提取', 'good') : doc.parse_status === 'low_quality' ? badge('文字质量低 · 需人工核对', 'warn') : badge('需人工摘录', 'warn');
@@ -90,6 +91,88 @@ export async function editRequirement(ctx, requirementId = null, source = null) 
   });
   dialog.body.append(form.node);
 }
+// ===== AI 智能摘要（Phase 1 只读建议：预览脱敏 → 人工确认 → 调用） =====
+const AI_SCOPE_LABELS = {documents: '招标文件正文', 'documents:all_current': '全部当前来源正文', 'documents:selected': '指定来源正文', facts: '项目事实', truncated: '正文超长已截断'};
+function aiConfirmDialog(preview) {
+  return new Promise(resolve => {
+    const dialog = modal('AI 调用确认', {wide: true});
+    let answered = false;
+    const answer = value => { if (answered) return; answered = true; dialog.close(true); resolve(value); };
+    const model = {confirmed: false};
+    const submit = button('确认发送', () => answer(true), 'primary', {disabled: true});
+    const box = checkbox(model, 'confirmed', `我已逐行核对以上脱敏内容，确认发送给 ${preview.provider} · ${preview.model}`);
+    box.querySelector('input').addEventListener('change', () => { submit.disabled = !model.confirmed; });
+    dialog.body.append(
+      notice('以下内容将发送给 AI 模型（已脱敏）。发送后无法撤回；返回结果只作为建议，不会自动写入项目、条款或草稿。', 'warn'),
+      h('div', {class: 'ai-preview-scroll top-space', tabindex: '0', 'aria-label': '脱敏后待发送内容'}, h('div', {class: 'prewrap'}, preview.redacted_text || '（无正文）')),
+      h('hr', {class: 'ai-divider'}),
+      definition([['已替换', redactionText(preview.redaction_summary)],
+        ['脱敏强度', preview.redaction_level === 'strict' ? '最严（外部端点）' : '标准（本地模型）'],
+        ['预计 token', String(preview.estimated_tokens)],
+        ['发送范围', (preview.scope_applied || []).map(item => AI_SCOPE_LABELS[item] || item).join('、') || '未指定'],
+        ['目标端点', `${preview.provider} · ${preview.model}`],
+        ['确认令牌', `${preview.expires_in_seconds} 秒内一次性有效，超时或重复使用须重新预览`]]),
+      ...(preview.warnings?.length ? [h('div', {class: 'top-space'}, preview.warnings.map(item => notice(item, 'warn')))] : []),
+      h('p', {class: 'small muted top-space'}, preview.disclaimer),
+      h('div', {class: 'top-space'}, box),
+      actions(button('取消', () => answer(false)), submit));
+    dialog.node.addEventListener('close', () => { if (!answered) { answered = true; resolve(false); } });
+  });
+}
+function aiResultView(ctx, slot, result, preview) {
+  return h('div', {class: 'ai-result'},
+    actions(badge('AI 建议 · 待人工确认', 'info'), badge(result.model || preview.model), badge('延迟 ' + result.latency_ms + ' ms'), badge(`tokens ${result.prompt_tokens} + ${result.completion_tokens}`), result.call_id ? badge('审计编号 #' + result.call_id) : null),
+    result.finish_reason === 'length' ? h('div', {class: 'top-space'}, notice('模型输出达到长度上限被截断，摘要可能不完整；请对照原文人工核对。', 'warn')) : null,
+    h('div', {class: 'prewrap top-space'}, result.text || '（模型未返回正文）'),
+    h('p', {class: 'small muted top-space'}, result.disclaimer),
+    actions(button('复制摘要文本', async () => {
+      try { await navigator.clipboard.writeText(result.text || ''); toast('摘要文本已复制。粘贴使用后仍须人工核对，不得直接当作已确认内容。'); }
+      catch { toast('浏览器未允许写入剪贴板，请直接选中文本复制。', 'error'); }
+    }, 'quiet small'), button('重新生成摘要', () => aiSummarize(ctx, slot), 'small')));
+}
+async function aiSummarize(ctx, slot) {
+  slot.replaceChildren(loading('正在收集当前来源正文并生成脱敏预览…'));
+  let preview;
+  try {
+    preview = (await apiDirect('/api/ai/preview', {method: 'POST', body: {feature: 'summarize', project_id: ctx.id, scope: {include_documents: true, document_ids: [], include_facts: false}}})).item;
+  } catch (error) {
+    slot.replaceChildren(error.code === 'AI_DISABLED' ? notice('外部 AI 未接入或已被禁用。请在本地设置的“AI 服务”中配置并保存后重试。', 'warn')
+      : error.code === 'NO_CONTENT' ? notice(error.message, 'warn') : errorPanel(error, () => aiSummarize(ctx, slot)));
+    return;
+  }
+  if (!(await aiConfirmDialog(preview))) { slot.replaceChildren(notice('已取消，未向任何模型发送内容。')); return; }
+  slot.replaceChildren(loading('已确认发送，正在等待模型返回…推理可能需要数十秒，请勿关闭页面。'));
+  try {
+    const result = (await apiDirect('/api/ai/invoke', {method: 'POST', body: {preview_id: preview.preview_id, user_confirmed: true}})).item;
+    if (result.status !== 'success') {
+      const reason = result.degradation?.message || result.degradation?.code || '模型未返回可用结果';
+      slot.replaceChildren(notice('AI 服务不可用，已降级为本地规则：' + reason + '。本次调用已记入审计日志。', 'warn'));
+      toast('AI 服务不可用，已使用本地规则。', 'error');
+      return;
+    }
+    slot.replaceChildren(aiResultView(ctx, slot, result, preview));
+  } catch (error) { slot.replaceChildren(errorPanel(error, () => aiSummarize(ctx, slot))); }
+}
+function aiSummaryPanel(ctx) {
+  const panel = h('div', {class: 'ai-panel'});
+  const slot = h('div', {class: 'ai-result-slot'});
+  const state = {ready: false, enabled: false, config: null};
+  function entry() {
+    const docs = ctx.data.documents;
+    const hasText = docs.some(doc => doc.parse_status === 'parsed' && (doc.blocks || []).some(block => block.text));
+    const reason = !state.ready ? '正在核对本机 AI 服务状态…' : !state.enabled ? '需在本地设置中启用 AI 服务' : !docs.length ? '请先上传招标文件或人工摘录' : !hasText ? '当前来源没有可发送的已提取正文，请对照原件人工摘录' : '';
+    panel.replaceChildren(h('div', {class: 'ai-panel-copy'}, h('strong', {}, 'AI ASSIST / 只读建议'),
+      h('p', {}, state.enabled ? '按本项目全部当前来源正文生成结构化摘要。发送前展示脱敏内容并须你勾选确认；返回结果不写入条款、草稿或复核结论。' : '未接入外部模型时，候选条款提取与风险检查仍全部由本机规则完成。'),
+      state.ready && reason ? h('p', {class: 'ai-blocked'}, '当前不可用：' + reason) : null),
+      actions(state.ready ? aiStatusBadge(state.config) : badge('正在核对 AI 服务'),
+        button('AI 智能摘要', () => aiSummarize(ctx, slot), 'primary', {disabled: Boolean(reason), title: reason || '生成招标文件智能摘要（发送前须逐次确认）'})));
+  }
+  entry();
+  aiConfig().then(config => { state.config = config; state.enabled = aiAvailable(config); })
+    .catch(() => { state.config = null; state.enabled = false; })
+    .finally(() => { state.ready = true; entry(); });
+  return h('div', {}, panel, slot);
+}
 export function analysisPage(ctx) {
   const docs = ctx.data.documents;
   const state = {document_id: docs.at(-1)?.id || '', q: '', category: '', confirmed: '', response: ''};
@@ -137,6 +220,7 @@ export function analysisPage(ctx) {
   else left.append(empty('首先，建立招标来源', '原件留存、来源版本和原文定位，将成为后续编制的依据。', button('上传 DOCX / PDF', () => importDocument(ctx), 'primary', {disabled: ctx.project.archived}), button('人工摘录', () => importDocument(ctx, true), '', {disabled: ctx.project.archived})));
   renderRequirements();
   return h('div', {}, h('div', {class: 'stage-head'}, h('div', {}, h('h2', {}, '招标文件与条款分析'), h('p', {}, '本地关键词提取候选 · 人工确认后使用 · 点击条款定位完整原文')), actions(button('人工摘录', () => importDocument(ctx, true), '', {disabled: ctx.project.archived}), button('上传文件 / 补遗', () => importDocument(ctx), 'primary', {disabled: ctx.project.archived}))),
+    aiSummaryPanel(ctx),
     h('div', {class: 'analysis-grid'}, left, h('section', {class: 'card'}, h('header', {class: 'card-head'}, h('h2', {}, '条款确认与响应'), counts, button('＋ 新增', () => editRequirement(ctx), 'small', {disabled: ctx.project.archived})),
       h('div', {class: 'toolbar'}, bind(state, 'q', '搜索条款', {type: 'search', className: 'search', placeholder: '条款内容或响应说明', onChange: renderRequirements}), bind(state, 'category', '分类', {options: {'': '全部分类', ...CATEGORIES}, onChange: renderRequirements}), bind(state, 'confirmed', '确认状态', {options: {'': '全部', false: '待确认', true: '已确认'}, onChange: renderRequirements}), bind(state, 'response', '响应状态', {options: {'': '全部响应', ...RESPONSE}, onChange: renderRequirements})), requirementsBox)));
 }

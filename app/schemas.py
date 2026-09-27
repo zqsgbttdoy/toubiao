@@ -1,12 +1,26 @@
 """公开API输入契约。未知字段一律拒绝，避免客户端自行设置审核结论。"""
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Annotated, Literal
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from urllib.parse import urlparse
+from pydantic import (AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field,
+                      StringConstraints, model_validator)
 
-Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20000)]
-Short = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+# 允许换行、回车与制表符；其余C0控制字符和DEL一律拒绝，
+# 避免NUL写入SQLite造成静默截断、input_hash与正文不一致。
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def reject_control_chars(value: str) -> str:
+    if _CONTROL_RE.search(value):
+        raise ValueError("不得包含控制字符（如NUL），请删除后重新提交")
+    return value
+
+
+Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20000), AfterValidator(reject_control_chars)]
+Short = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200), AfterValidator(reject_control_chars)]
 Id = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_-]{1,100}$")]
 Business = Literal["supervision", "tis"]
 Category = Literal["qualification", "mandatory", "scoring", "delivery", "pricing"]
@@ -237,6 +251,65 @@ class ExportRequest(Version):
 
 class DemoLoad(Input):
     confirmation: bool
+
+
+AIProviderName = Literal["null", "ollama", "openai_compat"]
+# Phase 1仅开放招标文件智能摘要；分类/生成在后续阶段解锁。
+AIFeature = Literal["summarize"]
+
+# 非云端部署时base_url仅允许本机回环，防止内网横向探测。
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+class AIConfigUpdate(Version):
+    enabled: bool = False
+    provider: AIProviderName = "null"
+    base_url: str = Field(default="", max_length=500, description="OpenAI兼容端点，Ollama需含/v1；空表示不修改")
+    model: str = Field(default="", max_length=200)
+    embedding_model: str = Field(default="", max_length=200)
+    api_key: str | None = Field(default=None, max_length=500, description="含*视为掩码回显，保留原密钥不变")
+    is_cloud: bool = False
+    redaction_level: Literal["standard", "strict"] = "standard"
+    default_scope: list[str] = Field(default_factory=lambda: ["documents"], max_length=10)
+    max_concurrent: int = Field(default=1, ge=1, le=4)
+    daily_token_budget: int = Field(default=200000, ge=0, le=100000000)
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=600.0)
+
+    @model_validator(mode="after")
+    def coherence(self):
+        if self.is_cloud and self.redaction_level != "strict":
+            raise ValueError("云端模型必须使用strict脱敏等级")
+        url = self.base_url.strip()
+        if url:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https") or not parsed.hostname:
+                raise ValueError("base_url必须是合法的http或https地址")
+            if not self.is_cloud and parsed.hostname.lower() not in _LOCAL_HOSTS:
+                raise ValueError("未勾选云端时，base_url仅允许127.0.0.1、localhost或::1")
+        if self.enabled:
+            if self.provider == "null":
+                raise ValueError("启用AI时必须选择ollama或openai_compat提供方")
+            if not url or not self.model.strip():
+                raise ValueError("启用AI时必须填写base_url与model")
+        return self
+
+
+class AIScope(Input):
+    include_documents: bool = True
+    document_ids: list[Id] = Field(default_factory=list, max_length=50,
+                                   description="限定来源版本；空表示项目全部当前来源")
+    include_facts: bool = Field(default=False, description="Phase 1默认仅发送招标文件正文")
+
+
+class AIPreviewRequest(Input):
+    feature: AIFeature
+    project_id: Id
+    scope: AIScope = Field(default_factory=AIScope)
+
+
+class AIInvokeRequest(Input):
+    preview_id: str = Field(min_length=8, max_length=64)
+    user_confirmed: bool
 
 
 class ErrorResponse(BaseModel):

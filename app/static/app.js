@@ -1,4 +1,4 @@
-import {api, ProjectContext} from './api.js';
+import {api, aiConfig, ProjectContext} from './api.js';
 import {h, badge, button, linkButton, loading, errorPanel, guard, toast} from './ui.js';
 import {dashboard, projectFrame} from './projects.js';
 import {analysisPage} from './analysis.js';
@@ -13,6 +13,15 @@ const shell = document.querySelector('.app-shell');
 const connection = document.querySelector('#network-state');
 const routes = [['dashboard', '项目工作台'], ['templates', '模板库'], ['materials', '企业资料'], ['snippets', '历史素材'], ['settings', '本地设置']];
 const navigation = document.querySelector('#navigation');
+const aiBoundary = document.querySelector('#ai-boundary');
+// 侧标边界声明必须跟随真实 AI 配置，不得在已接入模型时继续声称“未接入”。
+function renderAIBoundary(config) {
+  if (!aiBoundary) return;
+  aiBoundary.textContent = !config || !config.enabled || (config.provider || 'null') === 'null' ? '数据在本地 · 外部 AI 未接入'
+    : config.is_cloud ? '云端 AI 已接入 · 逐次确认后发送' : '本地 AI 已接入 · 正文不出本机';
+}
+aiConfig().then(renderAIBoundary).catch(() => renderAIBoundary(null));
+window.addEventListener('ai-config-changed', event => renderAIBoundary(event.detail));
 navigation.append(...routes.map(([route, label], index) => h('a', {class: 'nav-link', href: '#' + route}, h('span', {class: 'nav-index', 'aria-hidden': 'true'}, String(index + 1).padStart(2, '0')), label)));
 let currentHash = '';
 let rendering = 0;

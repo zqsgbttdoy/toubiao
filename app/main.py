@@ -11,11 +11,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .core import ROOT, DomainError, Settings, Store
 from .demo import load_demo
-from .files import blob_bytes, parse_and_store, read_upload
+from .files import blob_bytes, file_summary, parse_and_store, read_upload
 from .resources import seed_templates
 from .schemas import DemoLoad, ErrorResponse
 from .security import LocalSecurityMiddleware
 from . import projects, resources, pricing, drafts, review, exports
+from .ai import ai_router
 
 HELP = [
     {"title": "本地试用边界", "text": "本程序仅在127.0.0.1监听，单机内部试用，无真实登录。外部AI未接入；生成使用本地规则、模板及已确认事实，不是云模型结果。不联网OCR，不加载外部字体、CDN或遥测。"},
@@ -69,12 +70,17 @@ def create_app(settings: Settings | None = None):
 
     for router in (projects.router, resources.router, pricing.router, drafts.router, review.router, exports.router):
         app.include_router(router)
+    app.include_router(ai_router)
 
     @app.get("/api/health", tags=["设置与健康"])
     def health(request: Request):
-        with request.app.state.store.transaction() as c:
+        store = request.app.state.store
+        with store.transaction() as c:
             schema = c.execute("PRAGMA user_version").fetchone()[0]
-        return {"status": "ok", "version": "1.0.0", "schema_version": schema, "ai_mode": "local_rules", "external_ai": False}
+            config = store.get(c, "ai_config", "default", False)
+        external_ai = bool(config and config.get("enabled") and config.get("provider", "null") != "null")
+        ai_mode = config.get("provider") if external_ai else "local_rules"
+        return {"status": "ok", "version": "1.0.0", "schema_version": schema, "ai_mode": ai_mode, "external_ai": external_ai}
 
     @app.get("/api/dashboard", tags=["设置与健康"])
     def dashboard(request: Request):
@@ -87,10 +93,14 @@ def create_app(settings: Settings | None = None):
                 "templates": len(store.all(c, "template")), "snippets": len(store.all(c, "snippet"))}
 
     @app.get("/api/settings", tags=["设置与健康"])
-    def get_settings():
+    def get_settings(request: Request):
+        store = request.app.state.store
+        with store.transaction() as c:
+            config = store.get(c, "ai_config", "default", False)
+        external_ai = bool(config and config.get("enabled") and config.get("provider", "null") != "null")
         return {"data_directory": str(settings.data_dir), "host": "127.0.0.1", "port": settings.port,
             "max_upload_bytes": settings.max_upload, "max_pdf_pages": settings.max_pdf_pages,
-            "parse_timeout_seconds": settings.parse_timeout, "external_ai": False, "cloud_ocr": False,
+            "parse_timeout_seconds": settings.parse_timeout, "external_ai": external_ai, "cloud_ocr": False,
             "telemetry": False, "authentication": "none_local_records_only", "schema_version": 1,
             "privacy_notice": HELP[-1]["text"], "restore_instructions": HELP[-2]["text"]}
 
@@ -109,10 +119,12 @@ def create_app(settings: Settings | None = None):
         store = request.app.state.store
         with store.transaction() as c:
             items = store.all(c, "file")
-        return {"items": [x for x in items if not purpose or x["purpose"] == purpose]}
+        # 列表剥离 blocks 解析正文；完整内容通过 GET /api/files/{file_id} 获取。
+        return {"items": [file_summary(x) for x in items if not purpose or x["purpose"] == purpose]}
 
     @app.post("/api/files", status_code=201, tags=["受控文件"])
     async def upload_file(request: Request, file: UploadFile = File(...)):
+        # 异步端点仅做流式读取；阻塞解析与事务已放入线程池，不阻塞事件循环。
         store = request.app.state.store
         name, extension, raw = await read_upload(file, settings)
         item = await run_in_threadpool(parse_and_store, store, name, extension, raw, "attachment_or_history")

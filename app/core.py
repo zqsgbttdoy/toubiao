@@ -99,6 +99,9 @@ class Store:
                 );
                 PRAGMA user_version=1;
             """)
+            # AI审计表（ai_calls）独立于业务实体表，幂等创建；延迟导入避免与app.ai循环引用。
+            from app.ai.audit import init_ai_tables
+            init_ai_tables(c)
 
     @contextmanager
     def transaction(self):
@@ -147,6 +150,12 @@ class Store:
     def history(self, c, kind, entity_id):
         return [json.loads(r[0]) for r in c.execute(
             "SELECT data FROM revisions WHERE kind=? AND id=? ORDER BY version DESC", (kind, entity_id))]
+
+    def get_version(self, c, kind, entity_id, version):
+        """按版本号直接读取单条不可变修订，避免为取一个版本而加载全部历史。"""
+        row = c.execute("SELECT data FROM revisions WHERE kind=? AND id=? AND version=?",
+                        (kind, entity_id, version)).fetchone()
+        return json.loads(row["data"]) if row else None
 
     def delete(self, c, kind, entity_id):
         obj = self.get(c, kind, entity_id)

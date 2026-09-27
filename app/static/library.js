@@ -140,27 +140,41 @@ export async function editResource(type, id = null, onSaved = notifyChanged) {
       if (type === 'snippets') {
         const sourceSlot = h('div');
         let chooseField;
+        // 文件列表不再包含 blocks，选中来源后按需读取完整文件并缓存。
+        const blockCache = new Map();
+        const hasText = file => Array.isArray(file.blocks) || file.parse_status === 'parsed' || file.parse_status === 'low_quality';
         const renderSource = () => {
           const source = files.find(file => file.id === model.source_file_id);
           if (!source) { sourceSlot.replaceChildren(notice('先上传或选择历史来源，再人工勾选内容块。')); return; }
-          const selected = checks(model, 'source_block_ids', source.blocks || [], {label: block => locator(block.locator), info: block => h('div', {class: 'prewrap'}, block.text), emptyText: '此文件没有可选择文字，未启用 OCR。请另选文字型来源后建立素材。'});
-          selected.classList.add('source-picker');
-          sourceSlot.replaceChildren(...(source.warnings || []).map(w => notice(w, 'warn')), selected, button('用所选内容块填入素材正文', async () => {
-            const chosen = (source.blocks || []).filter(block => model.source_block_ids.includes(block.id));
-            if (!chosen.length) throw new Error('请至少选择一个来源内容块。');
-            const combined = chosen.map(block => block.text).join('\n\n');
-            if (combined.length > 20000) throw new Error('所选内容超过 20000 字，请减少选择，或自行摘编正文并保留来源关联。');
-            if (model.content && !(await confirmDialog('替换素材正文？', '将用所选来源块替换当前编辑正文。请先确认原编辑内容不再需要。', '确认填入'))) return;
-            model.content = combined; contentField.control.value = combined; editor.changed();
-          }, 'small'));
+          const fileId = source.id;
+          const load = () => {
+            sourceSlot.replaceChildren(loading('正在读取来源内容块…'));
+            const pending = blockCache.has(fileId) ? Promise.resolve(blockCache.get(fileId))
+              : api('/api/files/' + fileId).then(row => { blockCache.set(fileId, row.item); return row.item; });
+            return pending.then(full => {
+              if (fileId !== model.source_file_id) return;
+              const blocks = full.blocks || [];
+              const selected = checks(model, 'source_block_ids', blocks, {label: block => locator(block.locator), info: block => h('div', {class: 'prewrap'}, block.text), emptyText: '此文件没有可选择文字，未启用 OCR。请另选文字型来源后建立素材。'});
+              selected.classList.add('source-picker');
+              sourceSlot.replaceChildren(...(full.warnings || []).map(w => notice(w, 'warn')), selected, button('用所选内容块填入素材正文', async () => {
+                const chosen = blocks.filter(block => model.source_block_ids.includes(block.id));
+                if (!chosen.length) throw new Error('请至少选择一个来源内容块。');
+                const combined = chosen.map(block => block.text).join('\n\n');
+                if (combined.length > 20000) throw new Error('所选内容超过 20000 字，请减少选择，或自行摘编正文并保留来源关联。');
+                if (model.content && !(await confirmDialog('替换素材正文？', '将用所选来源块替换当前编辑正文。请先确认原编辑内容不再需要。', '确认填入'))) return;
+                model.content = combined; contentField.control.value = combined; editor.changed();
+              }, 'small'));
+            }).catch(error => { if (fileId === model.source_file_id) sourceSlot.replaceChildren(errorPanel(error, load)); });
+          };
+          load();
         };
         const contentField = bind(model, 'content', '素材正文（可人工摘编）', {type: 'textarea', required: true, maxLength: 20000, rows: 10, hint: '保留来源关联不代表该内容适用于当前投标项目。'});
         const renderChoice = () => {
-          const fresh = bind(model, 'source_file_id', '历史文档来源', {options: {'': '请选择已上传的历史来源', ...Object.fromEntries(files.filter(f => Array.isArray(f.blocks)).map(file => [file.id, file.name]))}, required: true, onChange: () => { model.source_block_ids = []; renderSource(); }});
+          const fresh = bind(model, 'source_file_id', '历史文档来源', {options: {'': '请选择已上传的历史来源', ...Object.fromEntries(files.filter(hasText).map(file => [file.id, file.name]))}, required: true, onChange: () => { model.source_block_ids = []; renderSource(); }});
           if (chooseField) chooseField.replaceWith(fresh); chooseField = fresh;
         };
         renderChoice(); renderSource();
-        body.append(h('div', {class: 'top-space'}, bind(model, 'title', '素材标题', {required: true, maxLength: 200})), common, h('section', {class: 'form-section'}, h('h3', {}, '先建立来源，再选择内容'), uploadBox(async file => { files.unshift(file); model.source_file_id = file.id; model.source_block_ids = []; renderChoice(); renderSource(); editor.changed(); }), h('div', {class: 'top-space'}, chooseField), sourceSlot), h('div', {class: 'top-space'}, contentField));
+        body.append(h('div', {class: 'top-space'}, bind(model, 'title', '素材标题', {required: true, maxLength: 200})), common, h('section', {class: 'form-section'}, h('h3', {}, '先建立来源，再选择内容'), uploadBox(async file => { blockCache.set(file.id, file); files.unshift(file); model.source_file_id = file.id; model.source_block_ids = []; renderChoice(); renderSource(); editor.changed(); }), h('div', {class: 'top-space'}, chooseField), sourceSlot), h('div', {class: 'top-space'}, contentField));
       }
       return body;
     },

@@ -51,6 +51,9 @@ export function api(path, options = {}) {
     window.dispatchEvent(new CustomEvent('api-writing', {detail: activeWrites}));
   });
 }
+// AI 预览 / 测试 / 调用只写独立审计表，不触碰业务实体；
+// 走直连而不进入写串行队列，避免一次数分钟的推理锁死其他保存与页面切换。
+export function apiDirect(path, options = {}) { return execute(path, options); }
 export function query(values = {}) {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) if (value !== '' && value !== undefined && value !== null) params.set(key, String(value));
@@ -79,6 +82,16 @@ export async function uploadShared(file) {
   body.append('file', file);
   return (await api('/api/files', {method: 'POST', body})).item;
 }
+// AI 服务配置为单例只读状态，缓存于内存；保存成功后由调用方写回，避免每次渲染重复读取。
+let aiConfigCache = null;
+export async function aiConfig(force = false) {
+  if (aiConfigCache && !force) return aiConfigCache;
+  aiConfigCache = (await api('/api/ai/config')).item;
+  return aiConfigCache;
+}
+export function rememberAIConfig(item) { aiConfigCache = item; }
+export function invalidateAIConfig() { aiConfigCache = null; }
+export const aiAvailable = config => Boolean(config && config.enabled && config.provider && config.provider !== 'null');
 export class ProjectContext {
   constructor(id, detail, rerender) { this.id = id; this.data = detail; this.rerender = rerender; this.needsRefresh = false; }
   get project() { return this.data.item; }

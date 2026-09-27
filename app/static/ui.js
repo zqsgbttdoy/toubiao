@@ -300,7 +300,7 @@ export function retainedInputs() {
         if (value && typeof value === 'object') return Object.entries(value).flatMap(([name, child]) => values(child, prefix ? prefix + ' / ' + (labels[name] || name) : labels[name] || name));
         return [field(prefix, h('textarea', {readOnly: true, rows: String(value ?? '').length > 200 ? 8 : 2, value: typeof value === 'boolean' ? (value ? '是' : '否') : String(value ?? '')}), '只读保留，可选择文本后复制。')];
       }
-      dialog.body.append(h('div', {}, notice('此副本未提交到数据库。请人工比较，不要用它直接覆盖当前版本。', 'warn'), entry.files?.length ? notice('此前选择但未随输入保留的文件：' + entry.files.join('、') + '。需要重新选择。', 'warn') : null, h('div', {class: 'top-space'}, ...values(entry.data))));
+      dialog.body.append(h('div', {}, notice('此副本未提交到数据库。请人工比较，不要用它直接覆盖当前版本。', 'warn'), ...(entry.files?.length ? [notice('此前选择但未随输入保留的文件：' + entry.files.join('、') + '。需要重新选择。', 'warn')] : []), h('div', {class: 'top-space'}, ...values(entry.data))));
     }, 'small'), button('清除', async () => {
       if (!(await confirmDialog('清除这份未保存输入？', '清除后无法从本机浏览器暂存中恢复，不影响数据库中的已保存内容。', '确认清除', true))) return;
       clearStored(key); render();

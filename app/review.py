@@ -12,6 +12,15 @@ from .schemas import ReviewDecision, FinalizeReview
 
 router = APIRouter(prefix="/api/projects", tags=["风险与内部复核"])
 DISCLAIMER = "本地规则仅报告风险，不代替法律判断；审核人只是人工记录，无身份认证，不能保证合规、中标或可直接提交。"
+# 复核列表只返回冻结快照摘要；完整不可变快照通过 GET /review/snapshots/{id} 获取。
+SNAPSHOT_SUMMARY_KEYS = ("id", "project_id", "version", "created_at", "updated_at",
+                         "project_version", "reviewer", "immutable")
+
+
+def snapshot_summary(record):
+    summary = {key: record.get(key) for key in SNAPSHOT_SUMMARY_KEYS}
+    summary["frozen_at"] = (record.get("snapshot") or {}).get("frozen_at")
+    return summary
 
 
 def referenced_file_ids(store, c, p, inputs):
@@ -20,7 +29,7 @@ def referenced_file_ids(store, c, p, inputs):
     file_ids.update(d["file_id"] for d in inputs["documents"] if d.get("file_id"))
     for section in current_sections(store, c, p):
         for ref in section["references"]:
-            revision = next((x for x in store.history(c, ref["kind"], ref["id"]) if x["version"] == ref["version"]), None)
+            revision = store.get_version(c, ref["kind"], ref["id"], ref["version"])
             if not revision:
                 continue
             if ref["kind"] == "material":
@@ -133,7 +142,7 @@ def check_risks(store, c, p):
         add("QUOTE_INCOMPLETE", "报价缺失、合计非正数或税率未明确确认")
     if draft and draft["quote_snapshot"] != quote:
         add("QUOTE_SNAPSHOT_STALE", "正文报价快照与当前报价不一致，必须重新生成")
-    if quote and sections and not any(s["category"] == "commercial" and s["contains_quote"] and quote_text(draft["quote_snapshot"]) in s["body"] for s in sections):
+    if quote and draft and sections and not any(s["category"] == "commercial" and s["contains_quote"] and quote_text(draft["quote_snapshot"]) in s["body"] for s in sections):
         add("QUOTE_BODY_MISSING", "商务正文缺少与草稿快照一致的完整报价块")
     return {"project_version": p["version"], "checked_at": now(), "issues": issues,
             "blocking_count": sum(x["blocking"] for x in issues),
@@ -160,7 +169,16 @@ def review_get(project_id: str, request: Request):
             record["stale"] = record["project_version"] != p["version"]
         return {"project_version": p["version"], "status": p["review_status"],
             "records": records, "risk_report": check_risks(store, c, p),
-            "current_review_id": p.get("current_review_id"), "snapshots": store.all(c, "review_snapshot", project_id)}
+            "current_review_id": p.get("current_review_id"),
+            "snapshots": [snapshot_summary(x) for x in store.all(c, "review_snapshot", project_id)]}
+
+
+@router.get("/{project_id}/review/snapshots/{snapshot_id}")
+def review_snapshot_detail(project_id: str, snapshot_id: str, request: Request):
+    store = request.app.state.store
+    with store.transaction() as c:
+        store.project(c, project_id)
+        return {"item": store.child(c, "review_snapshot", snapshot_id, project_id)}
 
 
 @router.post("/{project_id}/review/check")

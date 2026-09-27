@@ -17,6 +17,14 @@ from pypdf import PdfReader
 from .core import DomainError, uid
 
 MAX_TEXT = 2_000_000
+# 列表只返回元数据摘要；blocks 等解析正文体积巨大，仅通过 GET /api/files/{id} 获取。
+FILE_SUMMARY_KEYS = ("id", "project_id", "version", "created_at", "updated_at", "name", "sha256",
+                     "size", "media_type", "purpose", "download_url", "parse_status",
+                     "page_count", "warnings", "kind")
+
+
+def file_summary(file):
+    return {key: file[key] for key in FILE_SUMMARY_KEYS if key in file}
 
 
 def safe_name(name: str) -> str:
@@ -155,18 +163,17 @@ def parse_isolated(path, extension, settings):
         worker.close()
 
 
-async def read_upload(upload, settings):
+def upload_target(upload):
     name = safe_name(upload.filename)
     extension = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
     if extension not in (".docx", ".pdf"):
         raise DomainError("UNSUPPORTED_FILE", "仅支持DOCX和文字PDF；不支持DOC、宏、加密文件或图片OCR", 415)
-    chunks, size = [], 0
-    while chunk := await upload.read(1024 * 1024):
-        size += len(chunk)
-        if size > settings.max_upload:
-            raise DomainError("FILE_TOO_LARGE", "单个上传文件不得超过20MB", 413)
-        chunks.append(chunk)
-    raw = b"".join(chunks)
+    return name, extension
+
+
+def verify_upload(name, extension, raw, settings):
+    if len(raw) > settings.max_upload:
+        raise DomainError("FILE_TOO_LARGE", "单个上传文件不得超过20MB", 413)
     if not raw:
         raise DomainError("EMPTY_FILE", "上传文件为空", 422)
     if extension == ".pdf" and not raw.startswith(b"%PDF-"):
@@ -174,6 +181,25 @@ async def read_upload(upload, settings):
     if extension == ".docx" and not raw.startswith(b"PK\x03\x04"):
         raise DomainError("INVALID_DOCUMENT", "DOCX文件签名与扩展名不符，可能是加密或旧格式", 422)
     return name, extension, raw
+
+
+async def read_upload(upload, settings):
+    name, extension = upload_target(upload)
+    chunks, size = [], 0
+    while chunk := await upload.read(1024 * 1024):
+        size += len(chunk)
+        if size > settings.max_upload:
+            raise DomainError("FILE_TOO_LARGE", "单个上传文件不得超过20MB", 413)
+        chunks.append(chunk)
+    return verify_upload(name, extension, b"".join(chunks), settings)
+
+
+def read_upload_sync(upload, settings):
+    """同步读取已落盘的上传体，供同步端点在线程池中使用，不阻塞事件循环。"""
+    name, extension = upload_target(upload)
+    upload.file.seek(0)
+    raw = upload.file.read(settings.max_upload + 1)
+    return verify_upload(name, extension, raw, settings)
 
 
 def store_blob(store, c, raw, name, media_type, parsed=None, purpose="attachment"):

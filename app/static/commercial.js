@@ -1,5 +1,5 @@
 import {api} from './api.js';
-import {h, actions, badge, notice, button, linkButton, card, empty, bind, checkbox, editorForm, modal, confirmDialog, toast, SECTIONS, dateTime, definition, detail, versionRefresh, serverText, downloadButton} from './ui.js';
+import {h, actions, badge, notice, button, linkButton, card, empty, bind, checkbox, editorForm, modal, confirmDialog, toast, SECTIONS, dateTime, definition, detail, versionRefresh, serverText, downloadButton, loading, errorPanel} from './ui.js';
 import {quoteText, snapshotView} from './drafting.js';
 import {editRequirement} from './analysis.js';
 import {viewResource} from './library.js';
@@ -87,12 +87,25 @@ async function finalize(ctx) {
   });
   dialog.body.append(form.node);
 }
+// 列表接口只返回摘要，完整冻结快照按需单独读取，避免每次写操作后重传数MB内容。
+function frozenDialog(title, path) {
+  const dialog = modal(title, {wide: true});
+  const load = () => {
+    dialog.body.replaceChildren(loading('正在读取不可变冻结快照…'));
+    return api(path)
+      .then(result => dialog.body.replaceChildren(frozenView(result.item.snapshot)))
+      .catch(error => dialog.body.replaceChildren(errorPanel(error, load)));
+  };
+  load();
+  return dialog;
+}
 export function exportEntry(item) {
   const names = {technical: '技术文件 DOCX', commercial: '商务文件 DOCX', qualification: '资质目录 DOCX', package: '完整成果 ZIP'};
+  const base = '/api/projects/' + encodeURIComponent(item.project_id);
   return h('article', {class: 'export-entry'}, h('div', {class: 'split-label'}, actions(badge(item.mode === 'reviewed' ? '已内部复核版' : '送审稿', item.mode === 'reviewed' ? 'good' : 'warn'), badge('项目 v' + item.project_version)), h('span', {class: 'small muted'}, dateTime(item.created_at))),
     actions(...item.files.map(file => downloadButton(file, names[file.kind] || file.name))),
     item.manifest.missing_attachments?.length ? h('div', {class: 'top-space'}, notice(`成果包中有 ${item.manifest.missing_attachments.length} 份附件缺失，详见缺项清单。`, 'warn')) : null,
-    actions(button('查看此导出冻结内容', () => { const dialog = modal('导出时不可变快照', {wide: true}); dialog.body.append(frozenView(item.snapshot)); }, 'quiet small'), button('文件校验信息', () => {
+    actions(button('查看此导出冻结内容', () => frozenDialog('导出时不可变快照', `${base}/exports/${item.id}`), 'quiet small'), button('文件校验信息', () => {
       const dialog = modal('导出文件与哈希'); dialog.body.append(...item.files.map(file => detail(file.name, definition([['文件类型', names[file.kind] || file.kind], ['SHA-256', file.sha256], ['原始字节数', file.size]]))));
     }, 'quiet small')));
 }
@@ -126,5 +139,5 @@ export async function reviewPage(ctx) {
     })), h('div', {class: 'top-space'}, notice('单机版本无身份认证，审核人仅是人工记录。任何内容、报价或引用资源变化都会使复核失效。')), h('div', {class: 'top-space'}, actions(button(review.status === 'reviewed' ? '重新确认并冻结' : '人工确认并冻结', () => finalize(ctx), 'primary', {disabled: !canFinalize}), h('span', {class: 'small muted'}, canFinalize ? '无规则阻断且三类当前版本意见已通过' : '需要无阻断风险，并具备三类当前版本通过意见'))))),
     card('创建成果文件', h('div', {}, notice('技术、商务、资质目录 DOCX 与 ZIP 成果包均由本机后端生成。送审稿允许缺项；已复核版必须使用有效冻结快照。'), h('div', {class: 'top-space'}, actions(button('生成送审稿', () => createExport('review')), button('生成已内部复核版', () => createExport('reviewed'), 'primary', {disabled: review.status !== 'reviewed' || !review.current_review_id || report.blocking_count > 0}))))),
     card('历史导出', exports.items.length ? h('div', {}, [...exports.items].reverse().map(exportEntry)) : empty('尚无导出成果', '即使存在缺项，也可以生成带风险清单的送审稿供企业内部讨论。')),
-    card('内部复核冻结历史', review.snapshots.length ? h('div', {}, [...review.snapshots].reverse().map(item => h('div', {class: 'version-entry'}, h('h3', {}, `项目 v${item.project_version} · ${item.reviewer}`), h('p', {}, dateTime(item.created_at)), actions(badge(item.id === review.current_review_id ? '当前冻结' : '历史冻结', item.id === review.current_review_id ? 'good' : ''), button('查看不可变快照', () => { const dialog = modal('内部复核冻结快照', {wide: true}); dialog.body.append(frozenView(item.snapshot)); }, 'small'))))) : notice('尚未形成内部复核冻结快照。')));
+    card('内部复核冻结历史', review.snapshots.length ? h('div', {}, [...review.snapshots].reverse().map(item => h('div', {class: 'version-entry'}, h('h3', {}, `项目 v${item.project_version} · ${item.reviewer}`), h('p', {}, dateTime(item.frozen_at || item.created_at)), actions(badge(item.id === review.current_review_id ? '当前冻结' : '历史冻结', item.id === review.current_review_id ? 'good' : ''), button('查看不可变快照', () => frozenDialog('内部复核冻结快照', `${ctx.base}/review/snapshots/${item.id}`), 'small'))))) : notice('尚未形成内部复核冻结快照。')));
 }

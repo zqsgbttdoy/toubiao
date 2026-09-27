@@ -178,7 +178,7 @@ def test_health_and_persistence(client, settings):
 
 def test_empty_database_no_automatic_demo(client):
     assert ok(client.get("/api/projects"))["items"] == []
-    assert len(ok(client.get("/api/templates"))["items"]) == 6
+    assert len(ok(client.get("/api/templates"))["items"]) == 18
     assert ok(client.get("/api/dashboard"))["demo"] == 0
 
 
@@ -381,6 +381,11 @@ def test_complete_review_export_original_hash_and_frozen_snapshot(client, busine
     assert frozen["immutable"] and p["review_status"] == "reviewed"
     export = ok(client.post(f"/api/projects/{p['id']}/exports", json={"expected_version": p["version"], "mode": "reviewed"}), 201)["item"]
     assert len(export["files"]) == 4
+    # 创建响应与列表只返回摘要；完整冻结快照只能通过详情接口读取。
+    assert "snapshot" not in export
+    assert export["download_url"] == next(f["download_url"] for f in export["files"] if f["kind"] == "package")
+    frozen_export = ok(client.get(f"/api/projects/{p['id']}/exports/{export['id']}"))["item"]
+    assert frozen_export["snapshot"]["project"]["version"] == p["version"]
     package = next(f for f in export["files"] if f["kind"] == "package")
     raw = client.get(package["download_url"]).content
     assert hashlib.sha256(raw).hexdigest() == package["sha256"]
@@ -400,14 +405,17 @@ def test_complete_review_export_original_hash_and_frozen_snapshot(client, busine
     assert p["review_status"] == "pending"
     assert client.post(f"/api/projects/{p['id']}/exports", json={"expected_version": p["version"], "mode": "reviewed"}).status_code == 409
     assert client.get(package["download_url"]).content == raw
-    assert ok(client.get(f"/api/projects/{p['id']}/exports/{export['id']}"))["item"]["snapshot"] == export["snapshot"]
+    assert ok(client.get(f"/api/projects/{p['id']}/exports/{export['id']}"))["item"]["snapshot"] == frozen_export["snapshot"]
+    assert all("snapshot" not in row for row in ok(client.get(f"/api/projects/{p['id']}/exports"))["items"])
+    assert all("snapshot" not in row for row in ok(client.get(f"/api/projects/{p['id']}"))["exports"])
 
 
 def test_review_cannot_be_self_reported_or_skip_human_records(client):
     p = new_project(client)
     assert client.post(f"/api/projects/{p['id']}/review/finalize", json={"expected_version": p["version"], "reviewer": "测试", "confirmation": True}).status_code == 409
     sent = ok(client.post(f"/api/projects/{p['id']}/exports", json={"expected_version": p["version"], "mode": "review"}), 201)["item"]
-    assert sent["snapshot"]["risk_report"]["blocking_count"] > 0
+    assert "snapshot" not in sent
+    assert ok(client.get(f"/api/projects/{p['id']}/exports/{sent['id']}"))["item"]["snapshot"]["risk_report"]["blocking_count"] > 0
     p, draft, material, proof = complete_project(client)
     assert client.post(f"/api/projects/{p['id']}/review/finalize", json={"expected_version": p["version"], "reviewer": "测试", "confirmation": True}).json()["code"] == "REVIEW_RECORDS_INCOMPLETE"
     assert client.post(f"/api/projects/{p['id']}/review/finalize", json={"expected_version": p["version"], "reviewer": "测试", "confirmation": False}).status_code == 422
@@ -573,3 +581,80 @@ def test_public_static_directory_cannot_be_data_directory():
     from app.core import ROOT
     with pytest.raises(ValueError, match="公开静态"):
         Settings(ROOT / "app" / "static" / "private-data")
+
+
+def test_list_endpoints_strip_heavy_payloads(client):
+    p, draft, material, proof = complete_project(client)
+    drafts = ok(client.get(f"/api/projects/{p['id']}/drafts"))
+    assert all("input_snapshot" not in row and "sections" not in row and "quote_snapshot" not in row for row in drafts["items"])
+    summary = next(row for row in drafts["items"] if row["id"] == draft["id"])
+    assert summary["is_current"] is True and summary["stale"] is False
+    assert summary["section_count"] == len(draft["sections"])
+    assert drafts["current"]["input_snapshot"]["project"]["name"] == p["name"]
+    assert ok(client.get(f"/api/projects/{p['id']}/drafts/{draft['id']}"))["item"]["sections"][0]["body"]
+    frozen = finalize(client, p)
+    review = ok(client.get(f"/api/projects/{p['id']}/review"))
+    assert all("snapshot" not in row for row in review["snapshots"])
+    entry = next(row for row in review["snapshots"] if row["id"] == frozen["item"]["id"])
+    assert entry["frozen_at"] and entry["reviewer"] and entry["project_version"] == frozen["project"]["version"]
+    assert ok(client.get(f"/api/projects/{p['id']}/review/snapshots/{entry['id']}"))["item"]["snapshot"]["project"]["id"] == p["id"]
+    assert client.get(f"/api/projects/{p['id']}/review/snapshots/missing").status_code == 404
+    listed = ok(client.get("/api/files"))["items"]
+    assert listed and all("blocks" not in row for row in listed)
+    assert ok(client.get(f"/api/files/{proof['id']}"))["item"]["blocks"]
+
+
+@pytest.mark.parametrize("field,value", [("text", "含\u0000截断的原文"), ("title", "标题\u001b[0m"), ("source_note", "备注\u007f")])
+def test_control_characters_rejected(client, field, value):
+    p = new_project(client)
+    payload = {"expected_version": p["version"], "title": "人工摘录", "text": "必须人工核对的虚构原文。", "source_note": "人工"}
+    payload[field] = value
+    response = client.post(f"/api/projects/{p['id']}/documents/excerpts", json=payload)
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    payload[field] = value.replace("\u0000", "").replace("\u001b", "").replace("\u007f", "")
+    assert ok(client.post(f"/api/projects/{p['id']}/documents/excerpts", json=payload), 201)["item"]["blocks"][0]["text"]
+
+
+def test_section_edit_syncs_many_requirements_in_single_pass(client, settings):
+    p, draft, material, proof = complete_project(client)
+    first, target = draft["sections"][:2]
+    ids = [ok(client.get(f"/api/projects/{p['id']}/requirements"))["items"][0]["id"]]
+    for index in range(4):
+        current = ok(client.get(f"/api/projects/{p['id']}"))["item"]
+        created = ok(client.post(f"/api/projects/{p['id']}/requirements", json={"expected_version": current["version"],
+            "text": f"批量移动回归条款{index}", "category": "delivery", "section_id": first["id"]}), 201)
+        ids.append(created["item"]["id"])
+    detail = ok(client.get(f"/api/projects/{p['id']}"))
+    sections = {s["id"]: s for s in detail["draft"]["sections"]}
+    marker = event_marker(settings)
+    moved = ok(client.put(f"/api/projects/{p['id']}/drafts/{draft['id']}/sections/{target['id']}", json={
+        "expected_version": detail["item"]["version"], "entity_version": sections[target["id"]]["version"],
+        "body": sections[target["id"]]["body"], "references": sections[target["id"]]["references"], "requirement_ids": ids}))
+    assert moved["item"]["requirement_ids"] == ids
+    current = ok(client.get(f"/api/projects/{p['id']}"))
+    assert {r["id"]: r["section_id"] for r in current["requirements"]} == {rid: target["id"] for rid in ids}
+    sections = {s["id"]: s for s in current["draft"]["sections"]}
+    assert set(sections[target["id"]]["requirement_ids"]) == set(ids)
+    assert not set(sections[first["id"]]["requirement_ids"]) & set(ids)
+    # 批量化后，本次编辑只能产生“源章节一次 + 草稿一次”同步修订，而不是每条条款各一次。
+    assert link_events(settings, marker, "section") == {first["id"]: 1}
+    assert link_events(settings, marker, "draft") == {draft["id"]: 1}
+
+
+def event_marker(settings):
+    database = sqlite3.connect(settings.data_dir / "database.sqlite3")
+    try:
+        return database.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
+    finally:
+        database.close()
+
+
+def link_events(settings, marker, kind):
+    database = sqlite3.connect(settings.data_dir / "database.sqlite3")
+    try:
+        rows = database.execute("SELECT entity_id, COUNT(*) FROM events WHERE id>? AND action=? GROUP BY entity_id",
+                                (marker, f"{kind}.requirement_link_changed")).fetchall()
+    finally:
+        database.close()
+    return dict(rows)

@@ -21,6 +21,16 @@ from .schemas import ExportRequest
 
 router = APIRouter(prefix="/api", tags=["成果导出与本地备份"])
 DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+# 导出列表与项目详情只返回摘要；snapshot 完整冻结内容仅通过 GET /exports/{export_id} 获取。
+EXPORT_SUMMARY_KEYS = ("id", "project_id", "version", "created_at", "updated_at", "mode",
+                       "project_version", "review_snapshot_id", "manifest", "files", "immutable")
+
+
+def export_summary(export):
+    summary = {key: export.get(key) for key in EXPORT_SUMMARY_KEYS}
+    summary["download_url"] = next((f["download_url"] for f in export.get("files", [])
+                                    if f.get("kind") == "package" and f.get("download_url")), None)
+    return summary
 
 
 def clean_xml(text):
@@ -129,7 +139,7 @@ def export_list(project_id: str, request: Request):
     store = request.app.state.store
     with store.transaction() as c:
         p = store.project(c, project_id)
-        return {"items": store.all(c, "export", project_id), "project_version": p["version"]}
+        return {"items": [export_summary(e) for e in store.all(c, "export", project_id)], "project_version": p["version"]}
 
 
 @router.post("/projects/{project_id}/exports", status_code=201)
@@ -156,7 +166,7 @@ def export_create(project_id: str, body: ExportRequest, request: Request):
         item = store.save(c, "export", {"id": uid(), "project_id": project_id, "mode": body.mode,
             "project_version": p["version"], "review_snapshot_id": p.get("current_review_id") if body.mode == "reviewed" else None,
             "snapshot": snapshot, "manifest": manifest, "files": files, "immutable": True})
-        return {"item": item, "project_version": p["version"]}
+        return {"item": export_summary(item), "project_version": p["version"]}
 
 
 @router.get("/projects/{project_id}/exports/{export_id}")
