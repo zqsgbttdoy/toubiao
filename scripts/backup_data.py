@@ -6,13 +6,15 @@
 产物写入 data/backups/：
     toubiao_backup_<时间戳>.zip          —— 备份包（数据库快照 + blobs 附件 + 清单 + 恢复说明）
     toubiao_backup_<时间戳>.zip.sha256   —— 校验哈希与核对命令
-每次运行都新建独立时间戳文件，绝不覆盖历史备份。
+每次运行都新建独立时间戳文件；默认只保留最近 30 份旧备份（连同其 .sha256）自动清理，
+可用 --keep N 调整（--keep 0 = 全部保留、不删除）。
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import tempfile
 import zipfile
@@ -23,6 +25,38 @@ ROOT = Path(__file__).resolve().parent.parent  # 项目根目录（scripts 的�
 DB = ROOT / "data" / "database.sqlite3"
 BLOBS = ROOT / "data" / "blobs"
 OUT_DIR = ROOT / "data" / "backups"
+DEFAULT_KEEP = 30  # 默认保留最近 30 份备份，更旧的连同 .sha256 一起删除
+
+_BACKUP_RE = re.compile(r"^toubiao_backup_(\d{8}_\d{6})\.zip$")
+
+
+def prune_old_backups(out_dir: Path, keep: int) -> list[Path]:
+    """只按时间戳保留最近 keep 份备份，删除更旧的 .zip 及其 .sha256。
+
+    安全约束：keep<=0 不删；仅匹配 toubiao_backup_<8位日期>_<6位时间>.zip 命名，
+    其他文件一律不碰；按文件名时间戳升序排序，保留尾部最新 keep 份。
+    """
+    if keep <= 0:
+        return []
+    timed = []
+    for p in out_dir.glob("toubiao_backup_*.zip"):
+        m = _BACKUP_RE.match(p.name)
+        if m:
+            timed.append((m.group(1), p))
+    if len(timed) <= keep:
+        return []
+    timed.sort(key=lambda t: t[0])  # 旧 -> 新
+    removed: list[Path] = []
+    for _ts, p in timed[:-keep]:
+        try:
+            p.unlink()
+            removed.append(p)
+            side = Path(str(p) + ".sha256")
+            if side.exists():
+                side.unlink()
+        except OSError:
+            pass  # 单个删失败不影响其余，保守跳过
+    return removed
 
 
 def sha256(path: Path) -> str:
@@ -36,6 +70,8 @@ def sha256(path: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="投标平台数据一致性备份")
     parser.add_argument("--output", type=Path, default=OUT_DIR, help="备份输出目录")
+    parser.add_argument("--keep", type=int, default=DEFAULT_KEEP,
+                        help=f"保留最近几份备份（默认 {DEFAULT_KEEP}；0=全部保留不删除）")
     args = parser.parse_args()
 
     if not DB.exists():
@@ -114,6 +150,9 @@ def main() -> int:
         bad = z.testzip()
     ok = (bad is None and sha256(zip_path) == digest)
 
+    # 5) 旧备份自动清理（保留最近 --keep 份；连同其 .sha256）
+    removed = prune_old_backups(out_dir, args.keep)
+
     print("=" * 56)
     print("备份成功 ✅" if ok else "备份完成，但回读校验异常，请重跑一次 ⚠️")
     print("-" * 56)
@@ -122,7 +161,13 @@ def main() -> int:
     print(f"SHA-256：{digest}")
     print(f"大小：{zip_path.stat().st_size:,} 字节")
     print(f"数据库：{integrity}（{table_count} 张表）；本次包含附件 {manifest['attachment_count']} 个")
-    print(f"备份目录中共有 {len(list(out_dir.glob('toubiao_backup_*.zip')))} 份历史备份")
+    total = len(list(out_dir.glob('toubiao_backup_*.zip')))
+    if args.keep <= 0:
+        print(f"备份目录中共有 {total} 份历史备份（已关闭自动清理，全部保留）")
+    elif removed:
+        print(f"本次清理旧备份 {len(removed)} 份，仅保留最近 {args.keep} 份（当前共 {total} 份）")
+    else:
+        print(f"备份目录中共有 {total} 份历史备份（保留上限 {args.keep} 份，未满不清理）")
     print("提示：请连同 .sha256 一起复制到 U 盘/网盘妥善保管；恢复只能在停机状态下进行。")
     print("=" * 56)
     return 0 if ok else 3
