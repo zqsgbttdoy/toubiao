@@ -1,0 +1,35 @@
+# Python 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# 运行时数据（SQLite 数据库与文件存储）
+data/
+
+# IDE 配置
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 操作系统生成文件
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# 环境变量
+.env
+.env.*
+
+# 调试/临时产物（脚本自动生成，勿提交）
+_*.txt
+_*.ps1
+_*.bat
+_tmp*/
+_pid.tmp
+out.txt

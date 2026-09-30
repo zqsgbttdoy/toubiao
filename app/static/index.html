@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#102c40">
+  <title>标序 · 本地投标工作台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳至主要内容</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#dashboard"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>标序<small>LOCAL BID WORKSPACE</small></span></a>
+      <div class="sidebar-label">企业投标工作空间</div>
+      <nav id="navigation"></nav>
+      <div class="sidebar-bottom"><span class="local-dot"></span><strong>本机工作模式</strong><p id="ai-boundary">数据在本地 · 外部 AI 未接入</p><span class="edition">内部试用版 / 01</span></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div class="topbar-left"><button id="menu-toggle" class="button quiet menu-toggle" type="button" aria-expanded="false" aria-label="展开主导航">菜单</button><span id="breadcrumb">项目工作台</span></div><div class="topbar-right"><span id="network-state" class="connection">本地工作空间</span><a class="help-link" href="#help">使用帮助</a></div></header>
+      <main id="main" tabindex="-1" aria-live="polite"><div class="loading-panel"><span class="spinner"></span><p>正在连接本地工作台…</p></div></main>
+      <footer class="workspace-footer"><span>本地规则辅助 · 人工判断与复核</span><span>不自动投标，不代替法律判断</span></footer>
+    </div>
+  </div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <noscript>此工作台需要浏览器启用 JavaScript。所有脚本均来自本机，不连接云端服务。</noscript>
+</body>
+</html>
