@@ -33,3 +33,6 @@ _*.bat
 _tmp*/
 _pid.tmp
 out.txt
+
+# 全量格式复核样例（由 tests/export_all_samples.py 一键再生成，属派生产物，不入库）
+docs/格式复核样例_全量/
