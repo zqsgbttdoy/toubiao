@@ -12,6 +12,8 @@ from .column_tables_1d import (CommercialDeviationBuilder, RiskRegisterBuilder,
                                TisTeamConfigBuilder)
 from .column_tables_2c import C2C_BUILDERS
 from .column_tables_3a import COLUMN_3A_BUILDERS
+from .column_tables_4 import COLUMN_4_BUILDERS
+from .consortium import ConsortiumBuilder
 from .equipment_list import EquipmentListBuilder
 from .gantt_tables import ScheduleGanttBuilder, TisInspectionGanttBuilder
 from .hierarchy import OrgHierarchyBuilder, TisTeamHierarchyBuilder
@@ -58,6 +60,10 @@ _BUILDERS = (
     RectificationFlowBuilder(),
     # 柱状图引擎人数加权（P2 批次 3C）
     LaborPlanBuilder(),
+    # 列式引擎直接复用 + 平面布置降级说明表（P3 批次 4A+4C，共 3 表）
+    *COLUMN_4_BUILDERS,
+    # 段落引擎多方签署（P3 批次 4B）
+    ConsortiumBuilder(),
 )
 REGISTRY = {b.key: b for b in _BUILDERS}
 
